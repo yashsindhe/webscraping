@@ -1,0 +1,98 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+import duckdb
+
+# URL of the website
+url = "https://ocimpact.com/delegate-roster/"
+
+# Function to scrape delegate information
+def scrape_delegates(url):
+    chrome_driver_path = r'C:\chromedriver-win64\chromedriver.exe'  # Update with your actual path
+    service = webdriver.chrome.service.Service(chrome_driver_path)
+    driver = webdriver.Chrome(service=service)
+    driver.get(url)
+    
+    try:
+        # Wait for the parent element to be present and visible before looking for the delegates
+        WebDriverWait(driver, 20).until(
+            EC.visibility_of_element_located((By.CLASS_NAME, 'parent-class-element'))
+        )
+    except Exception as e:
+        print(f"Error waiting for parent element: {e}")
+        driver.quit()
+        return []
+
+    # Now wait for the specific elements to be present
+    WebDriverWait(driver, 20).until(
+        EC.presence_of_all_elements_located((By.CLASS_NAME, 'clamp__Clamp-ui__sc-1aq2rfp-0.grid__FullName-cmp__sc-1x1x5ym-3.hAEPUd.klXdSC'))
+    )
+
+    data = []
+
+    delegates = driver.find_elements(By.CLASS_NAME, 'clamp__Clamp-ui__sc-1aq2rfp-0.grid__FullName-cmp__sc-1x1x5ym-3.hAEPUd.klXdSC')
+    
+    for delegate in delegates:
+        delegate_data = {}
+        delegate.click()
+        
+        # Wait for the expanded info to be present
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CLASS_NAME, 'expanded-info'))
+            )
+        except Exception as e:
+            print(f"Error waiting for expanded info: {e}")
+            driver.back()
+            continue
+
+        # Parse the expanded info using BeautifulSoup
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # Extracting information
+        delegate_data['Name'] = soup.find('h2').text.strip()
+        delegate_data['Job Title'] = soup.find('div', class_='job-title').text.strip()
+        delegate_data['Organization'] = soup.find('div', class_='organization').text.strip()
+        
+        # Extracting answers to questions (Replace with actual question labels)
+        questions = soup.find_all('div', class_='question-class')
+        for i, question in enumerate(questions, start=1):
+            delegate_data[f'Question {i}'] = question.text.strip()
+        
+        data.append(delegate_data)
+        
+        # Go back to the main page
+        driver.back()
+        WebDriverWait(driver, 50).until(
+            EC.presence_of_all_elements_located((By.CLASS_NAME, 'clamp__Clamp-ui__sc-1aq2rfp-0.grid__FullName-cmp__sc-1x1x5ym-3.hAEPUd.klXdSC'))
+        )
+
+    driver.quit()
+    return data
+
+# Store data in DuckDB
+def store_data_in_duckdb(data):
+    if not data:
+        print("No data to store.")
+        return
+
+    # Create DuckDB connection
+    con = duckdb.connect(database=':memory:', read_only=False)
+    
+    # Create DuckDB table
+    con.execute("CREATE TABLE delegates (Name STRING, Job_Title STRING, Organization STRING, Question_1 STRING, Question_2 STRING)")
+
+    # Insert data into DuckDB table
+    for row in data:
+        con.execute("INSERT INTO delegates VALUES (?, ?, ?, ?, ?)", 
+                    (row['Name'], row['Job Title'], row['Organization'], row.get('Question 1', ''), row.get('Question 2', '')))
+
+    # Query DuckDB table (optional)
+    result = con.execute("SELECT * FROM delegates").fetchdf()
+    print(result)
+
+# Execute the scraping and storing functions
+delegate_data = scrape_delegates(url)
+store_data_in_duckdb(delegate_data)
